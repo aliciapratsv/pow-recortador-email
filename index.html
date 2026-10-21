@@ -158,7 +158,12 @@
   .vcut .cut-chip{right:auto; left:50%; top:6px; transform:translateX(-50%);}
   .cut-chip button{width:18px; height:18px; border:none; border-radius:50%; background:rgba(255,255,255,.25); color:#fff; font-size:11px; line-height:1; padding:0; display:grid; place-items:center;}
   .cut-chip button:hover{background:rgba(255,255,255,.45);}
-  .cell-num{position:absolute; background:rgba(23,22,20,.82); color:#fff; font-size:11px; font-weight:800; border-radius:6px; padding:2px 7px; pointer-events:none; font-variant-numeric:tabular-nums; z-index:1;}
+  .vcut:hover::before, .vcut.is-drag::before{border-left-width:3px;}
+  .hcut.is-cross{z-index:2;} .hcut.is-cross::before{border-top-style:dashed;}
+  .vcut.is-main{z-index:3;} .vcut.is-main::before{border-left-style:solid;}
+  .cell-box{position:absolute; pointer-events:none; z-index:1; box-shadow:inset 0 0 0 1px rgba(255,255,255,.55);}
+  .cell-box.is-alt{background:rgba(242,107,58,.10);}
+  .cell-num{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); background:rgba(23,22,20,.85); color:#fff; font-size:13px; font-weight:800; border-radius:var(--r-full); padding:3px 10px; pointer-events:none; font-variant-numeric:tabular-nums; white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,.25);}
   .band-off{position:absolute; left:0; right:0; background:repeating-linear-gradient(-45deg,rgba(10,9,8,.55) 0 8px,rgba(10,9,8,.38) 8px 16px); display:grid; place-items:center; pointer-events:none;}
   .band-off span{background:rgba(23,22,20,.85); color:#fff; font-size:11px; font-weight:700; padding:3px 10px; border-radius:var(--r-full);}
 
@@ -384,24 +389,28 @@
       id: uid(), file: file, name: name, base: name.replace(/\.[^.]+$/,""), ext: ext, mime: MIME[ext], isGif: isGif,
       url: img.src, img: img, w: img.naturalWidth, h: img.naturalHeight,
       mode: "crop", crop: { x:0, y:0, w:img.naturalWidth, h:img.naturalHeight },
-      rows: [{ y:0, xs:[], on:true }], sample: !!(opts && opts.sample)
+      dir: "h", rows: [{ y:0, xs:[], on:true }], sample: !!(opts && opts.sample)
     };
     return it;
   }
 
   // ---------------- pieces (outputs) ----------------
-  function bandEnd(it, i){ return i+1 < it.rows.length ? it.rows[i+1].y : it.h; }
+  function isV(it){ return it.dir === "v"; }
+  function mainLen(it){ return isV(it) ? it.w : it.h; }
+  function crossLen(it){ return isV(it) ? it.h : it.w; }
+  function bandEnd(it, i){ return i+1 < it.rows.length ? it.rows[i+1].y : mainLen(it); }
   function piecesOf(it){
     if (it.mode === "crop") return [{ x:it.crop.x, y:it.crop.y, w:it.crop.w, h:it.crop.h, row:0, col:0 }];
-    var out = [];
+    var out = [], v = isV(it);
     it.rows.forEach(function(r, i){
       if (!r.on) return;
-      var y0 = r.y, y1 = bandEnd(it, i);
-      if (y1 - y0 < 1) return;
-      var xb = [0].concat(r.xs, [it.w]);
+      var a0 = r.y, a1 = bandEnd(it, i);
+      if (a1 - a0 < 1) return;
+      var xb = [0].concat(r.xs, [crossLen(it)]);
       for (var j=0;j<xb.length-1;j++){
         if (xb[j+1]-xb[j] < 1) continue;
-        out.push({ x:xb[j], y:y0, w:xb[j+1]-xb[j], h:y1-y0, row:i, col:j });
+        out.push(v ? { x:a0, y:xb[j], w:a1-a0, h:xb[j+1]-xb[j], row:i, col:j }
+                   : { x:xb[j], y:a0, w:xb[j+1]-xb[j], h:a1-a0, row:i, col:j });
       }
     });
     return out;
@@ -420,32 +429,51 @@
   function fileName(it, n, total){ return baseName(it) + "_" + pad(n, total) + "." + it.ext; }
 
   // ---------------- auto-detect blocks ----------------
-  function detectRows(it){
-    var maxW = 400, s = Math.min(1, maxW / it.w);
-    var cw = Math.max(1, Math.round(it.w*s)), ch = Math.max(1, Math.round(it.h*s));
+  function sampleImg(it){
+    var sc = Math.min(1, 400 / Math.max(it.w, it.h));
+    var cw = Math.max(1, Math.round(it.w*sc)), ch = Math.max(1, Math.round(it.h*sc));
     var c = document.createElement("canvas"); c.width = cw; c.height = ch;
     var ctx = c.getContext("2d", { willReadFrequently:true });
     ctx.drawImage(it.img, 0, 0, cw, ch);
-    var d = ctx.getImageData(0,0,cw,ch).data;
-    var uni = new Uint8Array(ch), allow = Math.max(1, Math.floor(cw*0.004));
-    for (var y=0;y<ch;y++){
-      var o = y*cw*4, r0=d[o], g0=d[o+1], b0=d[o+2], a0=d[o+3], bad=0;
-      for (var x=1;x<cw;x++){
-        var p = o + x*4;
-        if (Math.abs(d[p]-r0)>18 || Math.abs(d[p+1]-g0)>18 || Math.abs(d[p+2]-b0)>18 || Math.abs(d[p+3]-a0)>18){ bad++; if (bad>allow) break; }
+    return { d: ctx.getImageData(0,0,cw,ch).data, cw:cw, ch:ch, s:sc, minGap: Math.max(2, Math.round(Math.max(8, it.w*0.012) * sc)) };
+  }
+  // Busca franjas lisas dentro de un rectángulo (coords. de la muestra).
+  // horiz = true: líneas horizontales (devuelve Y); false: líneas verticales (devuelve X). Coordenadas originales.
+  function gutters(S, horiz, x0, x1, y0, y1){
+    var d = S.d, cw = S.cw, n = horiz ? y1-y0 : x1-x0, len = horiz ? x1-x0 : y1-y0;
+    if (n < 3 || len < 2) return [];
+    var allow = Math.max(1, Math.floor(len*0.004)), uni = new Uint8Array(n);
+    for (var a=0;a<n;a++){
+      var bad = 0, p0 = horiz ? ((y0+a)*cw + x0)*4 : (y0*cw + x0+a)*4;
+      var r0 = d[p0], g0 = d[p0+1], b0 = d[p0+2], al0 = d[p0+3];
+      for (var k=1;k<len;k++){
+        var p = horiz ? ((y0+a)*cw + x0+k)*4 : ((y0+k)*cw + x0+a)*4;
+        if (Math.abs(d[p]-r0)>18 || Math.abs(d[p+1]-g0)>18 || Math.abs(d[p+2]-b0)>18 || Math.abs(d[p+3]-al0)>18){ bad++; if (bad>allow) break; }
       }
-      uni[y] = bad <= allow ? 1 : 0;
+      uni[a] = bad <= allow ? 1 : 0;
     }
-    var minGap = Math.max(2, Math.round(Math.max(8, it.w*0.012) * s));
-    var cuts = [], yy = 0;
-    while (yy < ch){
-      if (!uni[yy]){ yy++; continue; }
-      var st = yy; while (yy < ch && uni[yy]) yy++;
-      var en = yy - 1;
-      if (st > 0 && en < ch-1 && (en-st+1) >= minGap){ cuts.push(Math.round(((st+en+1)/2)/s)); }
+    var base = horiz ? y0 : x0, out = [], i = 0;
+    while (i < n){
+      if (!uni[i]){ i++; continue; }
+      var st = i; while (i < n && uni[i]) i++;
+      var en = i - 1;
+      if (st > 0 && en < n-1 && (en-st+1) >= S.minGap) out.push(Math.round((base + (st+en+1)/2) / S.s));
     }
+    return out;
+  }
+  function detectRows(it){
+    var S = sampleImg(it), v = isV(it), L = mainLen(it), C = crossLen(it);
     var rows = [{ y:0, xs:[], on:true }];
-    cuts.forEach(function(y){ if (y > rows[rows.length-1].y + 2 && y < it.h-2) rows.push({ y:y, xs:[], on:true }); });
+    gutters(S, !v, 0, S.cw, 0, S.ch).forEach(function(y){ if (y > rows[rows.length-1].y + 2 && y < L-2) rows.push({ y:y, xs:[], on:true }); });
+    if (v){
+      // en modo columnas, además busca los cortes horizontales dentro de cada columna
+      rows.forEach(function(r, i){
+        var s0 = Math.round(r.y*S.s), s1 = Math.min(S.cw, Math.round((i+1 < rows.length ? rows[i+1].y : L)*S.s));
+        var xs = [];
+        gutters(S, true, s0, s1, 0, S.ch).forEach(function(c){ if (c > (xs.length ? xs[xs.length-1] : 0) + 2 && c < C-2) xs.push(c); });
+        r.xs = xs;
+      });
+    }
     return rows;
   }
 
@@ -586,49 +614,59 @@
       ov.appendChild(box);
       $("hint").textContent = "Arrastrá el recuadro para moverlo y las esquinas para cambiar el tamaño. También podés escribir las medidas exactas a la derecha.";
     } else {
-      var list = allPieces(), nums = {};
-      list.forEach(function(e){ if (e.it===it) nums[e.p.row+"_"+e.p.col] = e.n; });
+      var v = isV(it), list = allPieces();
+      list.filter(function(e){ return e.it === it; }).forEach(function(e, idx){
+        var p = e.p, cb = el("div","cell-box" + (idx % 2 ? " is-alt" : ""));
+        cb.style.left = p.x*sc+"px"; cb.style.top = p.y*sc+"px"; cb.style.width = p.w*sc+"px"; cb.style.height = p.h*sc+"px";
+        cb.appendChild(el("span","cell-num","#"+e.n));
+        ov.appendChild(cb);
+      });
       it.rows.forEach(function(row, i){
-        var y0 = row.y, y1 = bandEnd(it, i);
+        var a0 = row.y, a1 = bandEnd(it, i);
         if (!row.on){
           var off = el("div","band-off","<span>No se descarga</span>");
-          off.style.top = y0*sc+"px"; off.style.height = (y1-y0)*sc+"px"; ov.appendChild(off);
-        } else {
-          var xb = [0].concat(row.xs);
-          xb.forEach(function(x, j){
-            var n = nums[i+"_"+j]; if (!n) return;
-            var b = el("div","cell-num", "#"+n); b.style.left = (x*sc+6)+"px"; b.style.top = (y0*sc+6)+"px"; ov.appendChild(b);
-          });
+          if (v){ off.style.left = a0*sc+"px"; off.style.width = (a1-a0)*sc+"px"; off.style.right = "auto"; off.style.top = "0"; off.style.bottom = "0"; }
+          else { off.style.top = a0*sc+"px"; off.style.height = (a1-a0)*sc+"px"; }
+          ov.appendChild(off);
         }
-        row.xs.forEach(function(x, k){
-          var v = el("div","vcut"); v.dataset.drag = "v"; v.dataset.row = i; v.dataset.k = k;
-          v.style.left = x*sc+"px"; v.style.top = y0*sc+"px"; v.style.height = (y1-y0)*sc+"px";
-          var chip = el("div","cut-chip", "<span>"+x+"</span>");
-          var del = el("button","","✕"); del.type="button"; del.title="Quitar este corte"; del.setAttribute("aria-label","Quitar corte vertical");
+        row.xs.forEach(function(c, k){
+          var line = el("div", (v ? "hcut" : "vcut") + " is-cross"); line.dataset.drag = "c"; line.dataset.row = i; line.dataset.k = k;
+          if (v){ line.style.top = c*sc+"px"; line.style.left = a0*sc+"px"; line.style.right = "auto"; line.style.width = (a1-a0)*sc+"px"; }
+          else { line.style.left = c*sc+"px"; line.style.top = a0*sc+"px"; line.style.height = (a1-a0)*sc+"px"; }
+          var chip = el("div","cut-chip", "<span>"+c+" px</span>");
+          var del = el("button","","✕"); del.type="button"; del.title="Quitar este corte"; del.setAttribute("aria-label","Quitar corte en "+c+" px");
           del.addEventListener("pointerdown", function(e){ e.stopPropagation(); });
           del.addEventListener("click", function(e){ e.stopPropagation(); row.xs.splice(k,1); changed(true); });
-          chip.appendChild(del); v.appendChild(chip); ov.appendChild(v);
+          chip.appendChild(del); line.appendChild(chip); ov.appendChild(line);
         });
         if (i > 0){
-          var h = el("div","hcut"); h.dataset.drag = "h"; h.dataset.row = i; h.style.top = y0*sc+"px";
-          var chip2 = el("div","cut-chip", "<span>Corte · "+y0+" px</span>");
-          var del2 = el("button","","✕"); del2.type="button"; del2.title="Quitar este corte"; del2.setAttribute("aria-label","Quitar corte en "+y0+" px");
+          var m = el("div", (v ? "vcut" : "hcut") + " is-main"); m.dataset.drag = "m"; m.dataset.row = i;
+          if (v){ m.style.left = a0*sc+"px"; m.style.top = "0"; m.style.height = it.h*sc+"px"; }
+          else m.style.top = a0*sc+"px";
+          var chip2 = el("div","cut-chip", "<span>Corte · "+a0+" px</span>");
+          var del2 = el("button","","✕"); del2.type="button"; del2.title="Quitar este corte"; del2.setAttribute("aria-label","Quitar corte en "+a0+" px");
           del2.addEventListener("pointerdown", function(e){ e.stopPropagation(); });
           del2.addEventListener("click", function(e){ e.stopPropagation(); removeCut(it, i); });
-          chip2.appendChild(del2); h.appendChild(chip2); ov.appendChild(h);
+          chip2.appendChild(del2); m.appendChild(chip2); ov.appendChild(m);
         }
       });
-      $("hint").textContent = "Arrastrá las líneas naranjas para mover los cortes. Hacé doble clic sobre la imagen para agregar un corte en ese punto.";
+      $("hint").textContent = "Arrastrá las líneas naranjas para mover los cortes. Doble clic agrega un corte " + (v ? "vertical" : "horizontal") + "; Shift + doble clic agrega uno " + (v ? "horizontal dentro de esa columna." : "vertical dentro de esa franja.");
     }
   }
-
   function removeCut(it, i){
     if (i <= 0) return;
     it.rows.splice(i,1);
     changed(true);
   }
+  function addCrossAt(it, pt){
+    var v = isV(it), a = v ? pt.x : pt.y, c = Math.round(clamp(v ? pt.y : pt.x, 1, crossLen(it)-1));
+    var i = 0; while (i+1 < it.rows.length && it.rows[i+1].y <= a) i++;
+    var row = it.rows[i]; if (row.xs.indexOf(c) >= 0) return;
+    row.xs.push(c); row.xs.sort(function(p,q){ return p-q; });
+    changed(true);
+  }
   function addCutAt(it, y){
-    y = Math.round(clamp(y, 1, it.h-1));
+    y = Math.round(clamp(y, 1, mainLen(it)-1));
     var i = 0; while (i+1 < it.rows.length && it.rows[i+1].y <= y) i++;
     if (it.rows[i].y === y) return;
     var src = it.rows[i];
@@ -646,28 +684,28 @@
       var kind = t.dataset.drag;
       var pt = toImg(e);
       drag = { kind:kind, sx:pt.x, sy:pt.y, orig:{ x:it.crop.x, y:it.crop.y, w:it.crop.w, h:it.crop.h }, row:+t.dataset.row, k:+t.dataset.k, el:t };
-      if (kind === "h") t.classList.add("is-drag");
+      if (kind === "m" || kind === "c") t.classList.add("is-drag");
       try { stage.setPointerCapture(e.pointerId); } catch(err){}
     });
     stage.addEventListener("pointermove", function(e){
       if (!drag) return;
       var it = active(); if (!it) return;
       var pt = toImg(e), dx = Math.round(pt.x - drag.sx), dy = Math.round(pt.y - drag.sy);
-      if (drag.kind === "h"){
-        var me = it.rows[drag.row], ny = Math.round(clamp(pt.y, 1, it.h-1));
+      if (drag.kind === "m"){
+        var L = mainLen(it), me = it.rows[drag.row], ny = Math.round(clamp(isV(it) ? pt.x : pt.y, 1, L-1));
         var taken = function(v){ return it.rows.some(function(r){ return r !== me && r.y === v; }); };
-        if (taken(ny)){ var dir = ny >= me.y ? 1 : -1; while (taken(ny) && ny+dir >= 1 && ny+dir <= it.h-1) ny += dir; }
+        if (taken(ny)){ var dir = ny >= me.y ? 1 : -1; while (taken(ny) && ny+dir >= 1 && ny+dir <= L-1) ny += dir; }
         if (!taken(ny)){
           me.y = ny;
           var first = it.rows[0], rest = it.rows.slice(1).sort(function(a,b){ return a.y - b.y; });
           it.rows = [first].concat(rest);
           drag.row = it.rows.indexOf(me);
         }
-      } else if (drag.kind === "v"){
-        var row = it.rows[drag.row], k = drag.k;
-        var nx = Math.round(clamp(pt.x, 1, it.w-1));
+      } else if (drag.kind === "c"){
+        var row = it.rows[drag.row], k = drag.k, CL = crossLen(it);
+        var nx = Math.round(clamp(isV(it) ? pt.y : pt.x, 1, CL-1));
         var takenX = function(v){ return row.xs.some(function(x, j){ return j !== k && x === v; }); };
-        if (takenX(nx)){ var dx2 = nx >= row.xs[k] ? 1 : -1; while (takenX(nx) && nx+dx2 >= 1 && nx+dx2 <= it.w-1) nx += dx2; }
+        if (takenX(nx)){ var dx2 = nx >= row.xs[k] ? 1 : -1; while (takenX(nx) && nx+dx2 >= 1 && nx+dx2 <= CL-1) nx += dx2; }
         if (!takenX(nx)){
           row.xs[k] = nx;
           var order = row.xs.map(function(x, j){ return { x:x, j:j }; }).sort(function(a,b){ return a.x - b.x; });
@@ -688,8 +726,8 @@
         }
       }
       renderOverlay(); syncPanel(); updateTags(); scheduleResults();
-      if (drag.kind === "h"){ var hl = ov.querySelector('.hcut[data-row="'+drag.row+'"]'); if (hl) hl.classList.add("is-drag"); }
-      if (drag.kind === "v"){ var vl = ov.querySelector('.vcut[data-row="'+drag.row+'"][data-k="'+drag.k+'"]'); if (vl) vl.classList.add("is-drag"); }
+      if (drag.kind === "m"){ var hl = ov.querySelector('.is-main[data-row="'+drag.row+'"]'); if (hl) hl.classList.add("is-drag"); }
+      if (drag.kind === "c"){ var vl = ov.querySelector('.is-cross[data-row="'+drag.row+'"][data-k="'+drag.k+'"]'); if (vl) vl.classList.add("is-drag"); }
     });
     var end = function(){
       if (!drag) return;
@@ -702,7 +740,8 @@
     stage.addEventListener("dblclick", function(e){
       var it = active(); if (!it || it.mode!=="split") return;
       if (e.target.closest(".cut-chip")) return;
-      addCutAt(it, toImg(e).y);
+      var pt = toImg(e);
+      if (e.shiftKey || e.altKey) addCrossAt(it, pt); else addCutAt(it, isV(it) ? pt.x : pt.y);
     });
   }
   function toImg(e){ var r = stage.getBoundingClientRect(); return { x:(e.clientX - r.left)/scale, y:(e.clientY - r.top)/scale }; }
@@ -798,10 +837,22 @@
 
   function buildSplitPanel(p, it){
     var g1 = el("div","group"); g1.style.borderTop = "none"; g1.style.paddingTop = "0";
-    g1.appendChild(el("div","lbl","Cortes horizontales"));
+    var V = isV(it);
+    g1.appendChild(el("div","lbl","Primero cortar en"));
+    var dseg = el("div","seg"); dseg.style.marginBottom = "14px";
+    [["h","Franjas (horizontal)"],["v","Columnas (vertical)"]].forEach(function(d){
+      var b = el("button", (it.dir||"h")===d[0] ? "is-on" : "", d[1]); b.type = "button";
+      b.addEventListener("click", function(){
+        if ((it.dir||"h") === d[0]) return;
+        it.dir = d[0]; it.rows = detectRows(it); changed(true);
+      });
+      dseg.appendChild(b);
+    });
+    g1.appendChild(dseg);
+    g1.appendChild(el("div","lbl", V ? "Cortes verticales" : "Cortes horizontales"));
     var br = el("div","btn-row");
     var bd = el("button","btn btn-accent","Detectar bloques"); bd.type="button"; bd.title = "Busca las franjas lisas (espacios en blanco) y corta ahí";
-    bd.addEventListener("click", function(){ it.rows = detectRows(it); changed(true); toast(it.rows.length > 1 ? "Se encontraron " + it.rows.length + " franjas" : "No se encontraron espacios lisos para cortar"); });
+    bd.addEventListener("click", function(){ it.rows = detectRows(it); changed(true); toast(it.rows.length > 1 ? "Se encontraron " + it.rows.length + (V ? " columnas" : " franjas") : "No se encontraron espacios lisos para cortar"); });
     var ba = el("button","btn","+ Agregar corte"); ba.type="button";
     ba.addEventListener("click", function(){
       var best = 0, bh = -1;
@@ -819,7 +870,7 @@
     var be = el("button","btn","Dividir"); be.type="button";
     be.addEventListener("click", function(){
       var n = clamp(parseInt($("equal-n").value,10) || 2, 1, 50), rows = [];
-      for (var i=0;i<n;i++) rows.push({ y:Math.round(i*it.h/n), xs:[], on:true });
+      for (var i=0;i<n;i++) rows.push({ y:Math.round(i*mainLen(it)/n), xs:[], on:true });
       it.rows = rows; changed(true);
     });
     eq.appendChild(be);
@@ -827,34 +878,34 @@
     p.appendChild(g1);
 
     var g2 = el("div","group");
-    g2.appendChild(el("div","lbl","Franjas ("+it.rows.length+")"));
+    g2.appendChild(el("div","lbl",(V ? "Columnas (" : "Franjas (")+it.rows.length+")"));
     var bands = el("div","bands");
     it.rows.forEach(function(row, i){
       var y1 = bandEnd(it, i);
       var b = el("div","band" + (row.on ? "" : " is-off"));
       var head = el("div","band-head");
       var ck = el("label","check"); ck.style.alignItems = "center";
-      ck.innerHTML = '<input type="checkbox" id="on-'+i+'"'+(row.on?" checked":"")+' title="Descargar esta franja"><span class="band-title">Franja '+(i+1)+'</span>';
+      ck.innerHTML = '<input type="checkbox" id="on-'+i+'"'+(row.on?" checked":"")+' title="Descargar esta parte"><span class="band-title">'+(V ? "Columna " : "Franja ")+(i+1)+'</span>';
       ck.querySelector("input").addEventListener("change", function(e){ row.on = e.target.checked; changed(true); });
       head.appendChild(ck);
-      head.appendChild(el("span","band-dim", '<span data-bh="'+i+'">'+it.w+' × '+(y1-row.y)+'</span> px'));
+      head.appendChild(el("span","band-dim", '<span data-bh="'+i+'">'+(V ? (y1-row.y)+' × '+it.h : it.w+' × '+(y1-row.y))+'</span> px'));
       b.appendChild(head);
       var ctr = el("div","band-ctrls");
       var c1 = el("div");
       c1.appendChild(el("span","mini-lbl","Empieza en"));
       if (i === 0){ var z = el("div","num"); z.innerHTML = '<input type="number" value="0" disabled aria-label="Empieza en 0"><span>px</span>'; c1.appendChild(z); }
       else c1.appendChild(numInput("row-y-"+i, row.y, "px", function(v){
-        var lo = it.rows[i-1].y + 1, hi = (i+1 < it.rows.length ? it.rows[i+1].y : it.h) - 1;
+        var lo = it.rows[i-1].y + 1, hi = (i+1 < it.rows.length ? it.rows[i+1].y : mainLen(it)) - 1;
         row.y = clamp(v, lo, hi); changed(false);
       }));
       var c2 = el("div");
-      var sl = el("label","mini-lbl","Columnas"); sl.setAttribute("for","cols-"+i); c2.appendChild(sl);
+      var sl = el("label","mini-lbl", V ? "Filas" : "Columnas"); sl.setAttribute("for","cols-"+i); c2.appendChild(sl);
       var sel = document.createElement("select"); sel.className = "sel"; sel.id = "cols-"+i;
       for (var n=1;n<=4;n++){ var o = document.createElement("option"); o.value = n; o.textContent = n===1 ? "Sin dividir" : n + " iguales"; if (row.xs.length+1===n) o.selected = true; sel.appendChild(o); }
       if (row.xs.length+1 > 4){ var o2 = document.createElement("option"); o2.value = row.xs.length+1; o2.textContent = (row.xs.length+1)+" (a mano)"; o2.selected = true; sel.appendChild(o2); }
       sel.addEventListener("change", function(){
         var n2 = parseInt(sel.value,10), xs = [];
-        for (var k=1;k<n2;k++) xs.push(Math.round(k*it.w/n2));
+        for (var k=1;k<n2;k++) xs.push(Math.round(k*crossLen(it)/n2));
         row.xs = xs; changed(true);
       });
       c2.appendChild(sel);
@@ -863,7 +914,9 @@
       bands.appendChild(b);
     });
     g2.appendChild(bands);
-    g2.appendChild(el("div","hint","Las columnas se pueden mover arrastrando la línea punteada. Destildá una franja para no descargarla."));
+    g2.appendChild(el("div","hint", V
+      ? "Las filas de cada columna se mueven arrastrando la línea punteada. Shift + doble clic sobre la imagen agrega un corte dentro de una columna. Destildá una columna para no descargarla."
+      : "Las columnas se mueven arrastrando la línea punteada. Shift + doble clic sobre la imagen agrega un corte vertical dentro de una franja. Destildá una franja para no descargarla."));
     p.appendChild(g2);
   }
 
@@ -880,7 +933,7 @@
     } else {
       it.rows.forEach(function(r,i){
         if (i>0) setv("row-y-"+i, r.y);
-        var bh = document.querySelector('[data-bh="'+i+'"]'); if (bh) bh.textContent = it.w + " × " + (bandEnd(it,i)-r.y);
+        var bh = document.querySelector('[data-bh="'+i+'"]'); if (bh) bh.textContent = isV(it) ? (bandEnd(it,i)-r.y) + " × " + it.h : it.w + " × " + (bandEnd(it,i)-r.y);
       });
     }
   }
